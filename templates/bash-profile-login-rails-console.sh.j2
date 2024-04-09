@@ -1,0 +1,13 @@
+# .bash_profile
+
+export RAILS_MASTER_KEY={{ rails_master_key }}
+export RAILS_ENV=development
+export DEPLOY_ENV={{ item  }}
+
+cd project
+git pull
+git checkout $DEPLOY_ENV
+cd src/railsproject
+BUNDLE_DEPLOYMENT=true bundle install --path /shared/bundle
+bin/rails c
+logout

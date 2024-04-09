@@ -1,0 +1,165 @@
+- name: "Setup Rails User Consoles"
+  hosts: ubuntu
+  gather_facts: true
+  become_user: root
+  become: true
+  vars:
+    - project_repo: git@github.com:roylindauer/my-monorepo.git
+    - rails_consoles:
+        - develop
+        - staging
+        - prod
+    - rails_master_key:
+    - user_groups:
+        - engineers
+        - production_engineers
+        - admins
+        - docker
+        - rails-console
+    - user_github_map:
+        roy: roylindauer
+    - users:
+        roy:
+          - engineers
+          - admins
+          - production_engineers
+          - wheel
+
+  tasks:
+    - name: Touch rails_consoles file
+      ansible.builtin.file:
+        path: "/tmp/rails_consoles.txt"
+        state: touch
+        mode: "0644"
+    - name: Register rails_consoles file
+      ansible.builtin.stat:
+        path: "/tmp/rails_consoles.txt"
+      register: rails_consoles_file
+    - name: Read rails_consoles file
+      ansible.builtin.slurp:
+        path: "/tmp/rails_consoles.txt"
+      register: rails_consoles_contents
+      when: rails_consoles_file.stat.exists
+    - name: Cache rails_consoles file
+      ansible.builtin.copy:
+        dest: "/tmp/rails_consoles.txt"
+        content: "{{ rails_consoles | checksum }}"
+        mode: "0644"
+      when: "rails_consoles_contents.content != (rails_consoles | checksum)"
+      register: rails_consoles_changed
+
+    - name: Ensure wheel sudoers group is present
+      ansible.builtin.group:
+        name: wheel
+        state: present
+    - name: Allow 'wheel' group passwordless sudo
+      ansible.builtin.lineinfile:
+        dest: /etc/sudoers
+        state: present
+        regexp: '^%wheel'
+        line: '%wheel ALL=(ALL) NOPASSWD: ALL'
+        validate: 'visudo -cf %s'
+    - name: Create User Groups
+      ansible.builtin.group:
+        name: "{{ item }}"
+        state: present
+      with_items: "{{ user_groups }}"
+
+    - name: Create User Accounts
+      ansible.builtin.user:
+        name: "{{ item.key }}"
+        groups: "{{ users[item.key] }}"
+        shell: /bin/bash
+      loop: "{{ user_github_map | dict2items }}"
+
+    - name: Set Authorized Keys From Users Github Public Keys
+      ansible.posix.authorized_key:
+        user: "{{ item.key }}"
+        state: present
+        key: "https://github.com/{{ item.value }}.keys"
+      loop: "{{ user_github_map | dict2items }}"
+
+    - name: Shared Ruby Bundler Install Path
+      ansible.builtin.file:
+        path: /shared/bundle
+        state: directory
+        group: rails-console
+        mode: "0775"
+
+    - name: Ruby Bundler Directory Permissions
+      ansible.builtin.file:
+        path: /shared/bundle
+        mode: g+s
+
+    - name: Create Console User Accounts
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups:
+          - rails-console
+        shell: /bin/bash
+      with_items: "{{ rails_consoles }}"
+      when: rails_consoles_changed.changed
+
+    - name: Console User Bash Profile
+      ansible.builtin.template:
+        dest: /home/{{ item }}/.bash_profile
+        src: templates/bash-profile-login-rails-console.sh.j2
+        mode: "0644"
+      with_items: "{{ rails_consoles }}"
+      when: rails_consoles_changed.changed
+
+    - name: Create ssh directory
+      ansible.builtin.file:
+        dest: /home/{{ item }}/.ssh
+        state: directory
+        mode: "0644"
+      with_items: "{{ rails_consoles }}"
+      when: rails_consoles_changed.changed
+
+    - name: Clear Authorized Keys Files
+      ansible.builtin.shell: |
+        set -o pipefail &&
+        echo '' > /home/{{ item }}/.ssh/authorized_keys
+      with_items: "{{ rails_consoles }}"
+      when: rails_consoles_changed.changed
+
+    - name: Grant Admin Access To All Consoles
+      ansible.builtin.shell: |
+        set -o pipefail &&
+        engineers=`grep '^admins:.*$' /etc/group | cut -d: -f4 | tr , "\n"`
+        for engineer in $engineers; do
+          cat /home/$engineer/.ssh/authorized_keys >> /home/{{ item }}/.ssh/authorized_keys
+        done
+      with_items: "{{ rails_consoles }}"
+      when: rails_consoles_changed.changed
+
+    - name: "Grant Production Engineer Access To Prod Consoles"
+      ansible.builtin.shell: |
+        set -o pipefail &&
+        engineers=`grep '^production_engineers:.*$' /etc/group | cut -d: -f4 | tr , "\n"`
+        for engineer in $engineers; do
+          cat /home/$engineer/.ssh/authorized_keys >> /home/{{ item }}/.ssh/authorized_keys
+        done
+      with_items:
+        - prod
+
+    - name: "Grant Engineer Access to Develop and Staging Consoles"
+      ansible.builtin.shell: |
+        set -o pipefail &&
+        engineers=`grep '^engineers:.*$' /etc/group | cut -d: -f4 | tr , "\n"`
+        for engineer in $engineers; do
+          cat /home/$engineer/.ssh/authorized_keys >> /home/{{ item }}/.ssh/authorized_keys
+        done
+      with_items:
+        - develop
+        - staging
+
+    - name: Setup Project In Each Console
+      ansible.builtin.git:
+        repo: "{{ project_repo }}"
+        dest: "/home/{{ item }}/project"
+        update: true
+        version: "{{ item }}"
+        force: true
+        accept_hostkey: true
+      with_items: "{{ rails_consoles }}"
