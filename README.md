@@ -1,6 +1,6 @@
 # Ansible Role - Rails Console
 
-Based on a thing I did while working for Blackbird Logistic.
+Based on a thing I did while working for Blackbird Logistics.
 
 This ansible playbook creates rails console accounts that would allow users to ssh into an Ops VM
 and connect directly to a ruby on rails console for a specific envirionment. 
